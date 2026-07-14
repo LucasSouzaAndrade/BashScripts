@@ -1,23 +1,30 @@
 @echo off
 setlocal enableextensions enabledelayedexpansion
 
-set "SCRIPT_DIR=%~dp0"
-set "LOG_DIR=%SCRIPT_DIR%logs"
+rem ==========================
+rem Configuracao padrao
+rem ==========================
+set "LINUX_USER=root"
+set "LINUX_HOST=192.168.40.141"
+set "HOSTKEY=SHA256:BnI2cklBut5FrbvH3UZVsYfX67rLQaTX3nubbgc4gMM"
 
-if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-if errorlevel 1 (
-    echo [ERRO] Nao foi possivel criar a pasta de log: %LOG_DIR%
-    exit /b 1
-)
+rem Senha padrao (altere se necessario)
+set "LINUX_PASS=consinco"
 
-call "%SCRIPT_DIR%TranferirAcruxPDVLinux.config.bat"
-if errorlevel 1 exit /b 1
+set "SRC_ROOT=C:\WorkCopy\TOTVS\PDV\Desktop\Projetos\AcruxPDV"
+set "SRC_GLOBAL_CLASSES=C:\WorkCopy\TOTVS\PDV\Desktop\Projetos\Classes"
+set "SRC_FONTES=%SRC_ROOT%\Fontes"
+set "SRC_CLASSES=%SRC_ROOT%\Classes"
+set "SRC_COMPONENT=%SRC_ROOT%\Component"
+set "SRC_RESOURCES=%SRC_ROOT%\Resources"
 
-call "%SCRIPT_DIR%TranferirAcruxPDVLinux.Common.bat" :EnsureTools
-if errorlevel 1 exit /b 1
-
-call "%SCRIPT_DIR%TranferirAcruxPDVLinux.Common.bat" :EnsureHostKey
-if errorlevel 1 exit /b 1
+set "REMOTE_ROOT=/mnt/Projetos/AcruxPDV"
+set "REMOTE_FONTES=%REMOTE_ROOT%/Fontes"
+set "REMOTE_CLASSES=%REMOTE_ROOT%/Classes"
+set "REMOTE_COMPONENT=%REMOTE_ROOT%/Component"
+set "REMOTE_RESOURCES=%REMOTE_ROOT%/Resources"
+set "REMOTE_ARQUIVOS=%REMOTE_ROOT%"
+set "REMOTE_GLOBAL_CLASSES=/mnt/Projetos/Classes"
 
 echo ==========================================
 echo Copia de pastas e arquivos para Linux
@@ -26,154 +33,158 @@ echo Origem base : %SRC_ROOT%
 echo Destino base: %LINUX_USER%@%LINUX_HOST%:%REMOTE_ROOT%/
 echo.
 
-echo [0/8] Garantindo diretorios de destino no Linux...
+if not exist "%SRC_ROOT%" (
+	echo [ERRO] Pasta base de origem nao encontrada: %SRC_ROOT%
+	exit /b 1
+)
+
+if not exist "%SRC_FONTES%" (
+	echo [ERRO] Pasta de origem nao encontrada: %SRC_FONTES%
+	exit /b 1
+)
+
+if not exist "%SRC_CLASSES%" (
+	echo [ERRO] Pasta de origem nao encontrada: %SRC_CLASSES%
+	exit /b 1
+)
+
+if not exist "%SRC_COMPONENT%" (
+	echo [ERRO] Pasta de origem nao encontrada: %SRC_COMPONENT%
+	exit /b 1
+)
+
+if not exist "%SRC_RESOURCES%" (
+	echo [ERRO] Pasta de origem nao encontrada: %SRC_RESOURCES%
+	exit /b 1
+)
+
+if not exist "%SRC_GLOBAL_CLASSES%" (
+	echo [ERRO] Pasta de origem nao encontrada: %SRC_GLOBAL_CLASSES%
+	exit /b 1
+)
+
+where pscp >nul 2>nul
+if errorlevel 1 (
+	echo [ERRO] pscp nao encontrado. Instale o PuTTY ou adicione ao PATH.
+	exit /b 1
+)
+
+where plink >nul 2>nul
+if errorlevel 1 (
+	echo [ERRO] plink nao encontrado. Instale o PuTTY ou adicione ao PATH.
+	exit /b 1
+)
+
+echo [INFO] Validando HOSTKEY atual...
+call :TestHostKey
+if errorlevel 1 (
+	echo [AVISO] HOSTKEY atual falhou. Tentando gerar automaticamente...
+	call :RefreshHostKey
+	if errorlevel 1 (
+		echo [ERRO] Nao foi possivel gerar HOSTKEY automaticamente.
+		exit /b 1
+	)
+
+	echo [INFO] HOSTKEY atualizado em memoria: %HOSTKEY%
+	call :TestHostKey
+	if errorlevel 1 (
+		echo [ERRO] HOSTKEY gerado, mas a conexao ainda falhou.
+		echo        Verifique usuario/senha e conectividade de rede.
+		exit /b 1
+	)
+)
+
+echo [1/7] Garantindo diretorios de destino no Linux...
 plink -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" %LINUX_USER%@%LINUX_HOST% "mkdir -p %REMOTE_FONTES% %REMOTE_CLASSES% %REMOTE_COMPONENT% %REMOTE_RESOURCES% %REMOTE_ARQUIVOS% %REMOTE_GLOBAL_CLASSES%"
 if errorlevel 1 (
-    echo [ERRO] Falha ao criar diretorios remotos.
-    exit /b 1
+	echo [ERRO] Falha ao criar diretorios remotos.
+	exit /b 1
 )
 
-set "RUN_ID="
-for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "RUN_ID=%%I"
-if not defined RUN_ID set "RUN_ID=%RANDOM%_%RANDOM%"
-set "JOB_DIR=%LOG_DIR%\run_%RUN_ID%_%RANDOM%"
-mkdir "%JOB_DIR%" >nul 2>nul
+echo [2/7] Copiando pasta Fontes...
+pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp -r "%SRC_FONTES%\*" %LINUX_USER%@%LINUX_HOST%:%REMOTE_FONTES%/
 if errorlevel 1 (
-    echo [ERRO] Nao foi possivel criar pasta temporaria de jobs.
-    exit /b 1
+	echo [ERRO] Falha ao copiar pasta Fontes.
+	exit /b 1
 )
 
-echo [1/8] Iniciando grupos assincronos em lotes (2 por vez)...
-set "ANY_FAIL=0"
+echo [3/7] Copiando pasta Classes (AcruxPDV)...
+pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp -r "%SRC_CLASSES%\*" %LINUX_USER%@%LINUX_HOST%:%REMOTE_CLASSES%/
+if errorlevel 1 (
+	echo [ERRO] Falha ao copiar pasta Classes AcruxPDV.
+	exit /b 1
+)
 
-rem Lote 1
-call :StartGroupAsync "01.Fontes" "TranferirAcruxPDVLinux.01.Fontes.bat"
-if errorlevel 1 exit /b 1
-call :StartGroupAsync "02.ClassesAcruxPDV" "TranferirAcruxPDVLinux.02.ClassesAcruxPDV.bat"
-if errorlevel 1 exit /b 1
+echo [4/7] Copiando pasta Component...
+pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp -r "%SRC_COMPONENT%\*" %LINUX_USER%@%LINUX_HOST%:%REMOTE_COMPONENT%/
+if errorlevel 1 (
+	echo [ERRO] Falha ao copiar pasta Component.
+	exit /b 1
+)
 
-echo [2/8] Aguardando lote 1...
-call :WaitGroup "01.Fontes" || set "ANY_FAIL=1"
-call :WaitGroup "02.ClassesAcruxPDV" || set "ANY_FAIL=1"
+echo [5/7] Copiando pasta Resources...
+pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp -r "%SRC_RESOURCES%\*" %LINUX_USER%@%LINUX_HOST%:%REMOTE_RESOURCES%/
+if errorlevel 1 (
+	echo [ERRO] Falha ao copiar pasta Resources.
+	exit /b 1
+)
 
-if "%ANY_FAIL%"=="1" goto :EndWithFailure
+echo [6/7] Copiando pasta global Classes...
+pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp -r "%SRC_GLOBAL_CLASSES%\*" %LINUX_USER%@%LINUX_HOST%:%REMOTE_GLOBAL_CLASSES%/
+if errorlevel 1 (
+	echo [ERRO] Falha ao copiar pasta global Classes.
+	exit /b 1
+)
 
-rem Lote 2
-call :StartGroupAsync "03.Component" "TranferirAcruxPDVLinux.03.Component.bat"
-if errorlevel 1 exit /b 1
-call :StartGroupAsync "04.Resources" "TranferirAcruxPDVLinux.04.Resources.bat"
-if errorlevel 1 exit /b 1
+echo [7/7] Copiando arquivos da raiz (sem subpastas)...
+set "HAS_FILE=0"
+for /f "delims=" %%F in ('dir /b /a-d "%SRC_ROOT%"') do (
+	set "HAS_FILE=1"
+	echo    - "%%F"
+	pscp -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" -scp "%SRC_ROOT%\%%F" %LINUX_USER%@%LINUX_HOST%:%REMOTE_ARQUIVOS%/
+	if errorlevel 1 (
+		echo [ERRO] Falha ao copiar arquivo: "%%F"
+		exit /b 1
+	)
+)
 
-echo [3/8] Aguardando lote 2...
-call :WaitGroup "03.Component" || set "ANY_FAIL=1"
-call :WaitGroup "04.Resources" || set "ANY_FAIL=1"
+if "!HAS_FILE!"=="0" (
+	echo [AVISO] Nenhum arquivo de raiz encontrado para copiar em %SRC_ROOT%.
+)
 
-if "%ANY_FAIL%"=="1" goto :EndWithFailure
-
-rem Lote 3
-call :StartGroupAsync "05.ClassesGlobal" "TranferirAcruxPDVLinux.05.ClassesGlobal.bat"
-if errorlevel 1 exit /b 1
-call :StartGroupAsync "06.ArquivosRaiz" "TranferirAcruxPDVLinux.06.ArquivosRaiz.bat"
-if errorlevel 1 exit /b 1
-
-echo [4/8] Aguardando lote 3...
-call :WaitGroup "05.ClassesGlobal" || set "ANY_FAIL=1"
-call :WaitGroup "06.ArquivosRaiz" || set "ANY_FAIL=1"
-
-if "%ANY_FAIL%"=="1" goto :EndWithFailure
-
-if exist "%JOB_DIR%" rd /s /q "%JOB_DIR%" >nul 2>nul
-
-echo [5/8] Validando diretorios no Linux...
+echo [VALIDACAO] Conferindo diretorios no Linux...
 plink -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" %LINUX_USER%@%LINUX_HOST% "ls -ld %REMOTE_FONTES% %REMOTE_CLASSES% %REMOTE_COMPONENT% %REMOTE_RESOURCES% %REMOTE_ARQUIVOS% %REMOTE_GLOBAL_CLASSES%"
 if errorlevel 1 (
-    echo [ERRO] Validacao remota falhou.
-    exit /b 2
+	echo [ERRO] Validacao remota falhou.
+	exit /b 2
 )
 
 echo.
 echo [OK] Processo concluido com sucesso.
 exit /b 0
 
-:EndWithFailure
-echo [ERRO] Um ou mais grupos falharam. Logs em: %JOB_DIR%
-exit /b 1
+:TestHostKey
+plink -batch -hostkey "%HOSTKEY%" -pw "%LINUX_PASS%" %LINUX_USER%@%LINUX_HOST% "echo ok" >nul 2>nul
+exit /b %errorlevel%
 
-:StartGroupAsync
-set "GRP_NAME=%~1"
-set "GRP_FILE=%~2"
-set "GRP_LOG=%JOB_DIR%\%GRP_NAME%.log"
-set "GRP_RC=%JOB_DIR%\%GRP_NAME%.rc"
-set "GRP_RUN=%JOB_DIR%\%GRP_NAME%.cmd"
+:RefreshHostKey
+set "TMP_HOSTKEY_FILE=%TEMP%\plink_hostkey_%RANDOM%_%RANDOM%.txt"
+set "NEW_HOSTKEY="
 
-if exist "%GRP_RC%" del /q "%GRP_RC%" >nul 2>nul
-if exist "%GRP_RUN%" del /q "%GRP_RUN%" >nul 2>nul
+plink -batch -pw "%LINUX_PASS%" %LINUX_USER%@%LINUX_HOST% "exit" 1>nul 2>"%TMP_HOSTKEY_FILE%"
 
-> "%GRP_RUN%" (
-    echo @echo off
-    echo call "%SCRIPT_DIR%%GRP_FILE%" ^> "%GRP_LOG%" 2^>^&1
-    echo set "RC=%%errorlevel%%"
-    echo ^> "%GRP_RC%" echo %%RC%%
+for /f "usebackq tokens=*" %%L in ("%TMP_HOSTKEY_FILE%") do (
+	for %%W in (%%L) do (
+		set "CANDIDATE=%%W"
+		if /i "!CANDIDATE:~0,7!"=="SHA256:" set "NEW_HOSTKEY=!CANDIDATE!"
+	)
 )
 
-start "" /b cmd /c ""%GRP_RUN%""
-if errorlevel 1 (
-    echo [ERRO] Falha ao iniciar grupo %GRP_NAME%.
-    exit /b 1
+if exist "%TMP_HOSTKEY_FILE%" del /q "%TMP_HOSTKEY_FILE%" >nul 2>nul
+
+if not defined NEW_HOSTKEY (
+	exit /b 1
 )
 
-echo   - %GRP_NAME% iniciado.
-exit /b 0
-
-:WaitGroup
-set "GRP_NAME=%~1"
-set "GRP_LOG=%JOB_DIR%\%GRP_NAME%.log"
-set "GRP_RC=%JOB_DIR%\%GRP_NAME%.rc"
-set /a "WAIT_COUNT=0"
-set /a "WAIT_MAX=7200"
-
-:WaitGroupLoop
-if not exist "%GRP_RC%" (
-    set /a "WAIT_COUNT+=1"
-    if !WAIT_COUNT! GEQ !WAIT_MAX! (
-        echo [ERRO] Timeout aguardando grupo %GRP_NAME%.
-        exit /b 1
-    )
-    timeout /t 1 /nobreak >nul
-    goto :WaitGroupLoop
-)
-
-set "GRP_RESULT="
-set /p GRP_RESULT=<"%GRP_RC%" 2>nul
-if not defined GRP_RESULT (
-    set /a "WAIT_COUNT+=1"
-    if !WAIT_COUNT! GEQ !WAIT_MAX! (
-        echo [ERRO] Timeout lendo retorno do grupo %GRP_NAME%.
-        exit /b 1
-    )
-    timeout /t 1 /nobreak >nul
-    goto :WaitGroupLoop
-)
-
-for /f "delims=0123456789" %%X in ("%GRP_RESULT%") do (
-    echo [ERRO] Retorno invalido do grupo %GRP_NAME%: %GRP_RESULT%
-    if exist "%GRP_LOG%" (
-        echo ------- LOG %GRP_NAME% -------
-        type "%GRP_LOG%"
-        echo ------- FIM LOG %GRP_NAME% -------
-    )
-    exit /b 1
-)
-
-if not "%GRP_RESULT%"=="0" (
-    echo [ERRO] Grupo %GRP_NAME% falhou. Codigo: %GRP_RESULT%
-    if exist "%GRP_LOG%" (
-        echo ------- LOG %GRP_NAME% -------
-        type "%GRP_LOG%"
-        echo ------- FIM LOG %GRP_NAME% -------
-    )
-    exit /b 1
-)
-
-echo   - %GRP_NAME% finalizado com sucesso.
+set "HOSTKEY=%NEW_HOSTKEY%"
 exit /b 0
